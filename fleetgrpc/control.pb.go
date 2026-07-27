@@ -691,9 +691,13 @@ func (x *GetStateReply) GetActiveJobs() []*JobSummary {
 // CreateFleet adds a fleet (GetOrCreateFleet). Idempotent: returns the existing
 // fleet if present.
 type CreateFleetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Remote        string                 `protobuf:"bytes,2,opt,name=remote,proto3" json:"remote,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Name   string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Remote string                 `protobuf:"bytes,2,opt,name=remote,proto3" json:"remote,omitempty"`
+	// Absolute path (on the DAEMON host) of an existing folder. When set, this is
+	// a "local folder" fleet: remote is empty and its single instance bind-mounts
+	// the folder in place. See CreateInstanceRequest.source_path.
+	SourcePath    *string `protobuf:"bytes,3,opt,name=source_path,json=sourcePath,proto3,oneof" json:"source_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -738,6 +742,13 @@ func (x *CreateFleetRequest) GetName() string {
 func (x *CreateFleetRequest) GetRemote() string {
 	if x != nil {
 		return x.Remote
+	}
+	return ""
+}
+
+func (x *CreateFleetRequest) GetSourcePath() string {
+	if x != nil && x.SourcePath != nil {
+		return *x.SourcePath
 	}
 	return ""
 }
@@ -1153,10 +1164,13 @@ const file_control_proto_rawDesc = "" +
 	"\x05state\x18\x01 \x01(\v2\x10.fleetgrpc.StateR\x05state\x124\n" +
 	"\aruntime\x18\x02 \x03(\v2\x1a.fleetgrpc.InstanceRuntimeR\aruntime\x126\n" +
 	"\vactive_jobs\x18\x03 \x03(\v2\x15.fleetgrpc.JobSummaryR\n" +
-	"activeJobs\"@\n" +
+	"activeJobs\"v\n" +
 	"\x12CreateFleetRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
-	"\x06remote\x18\x02 \x01(\tR\x06remote\")\n" +
+	"\x06remote\x18\x02 \x01(\tR\x06remote\x12$\n" +
+	"\vsource_path\x18\x03 \x01(\tH\x00R\n" +
+	"sourcePath\x88\x01\x01B\x0e\n" +
+	"\f_source_path\")\n" +
 	"\x13DestroyFleetRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"e\n" +
 	"\x17SetFleetSettingsRequest\x12\x14\n" +
@@ -1248,6 +1262,7 @@ func file_control_proto_init() {
 	file_runtime_proto_init()
 	file_jobs_proto_init()
 	file_control_proto_msgTypes[2].OneofWrappers = []any{}
+	file_control_proto_msgTypes[14].OneofWrappers = []any{}
 	file_control_proto_msgTypes[17].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

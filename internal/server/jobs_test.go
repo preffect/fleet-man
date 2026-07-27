@@ -74,7 +74,7 @@ func TestCreateInstanceJobStartedThenDone(t *testing.T) {
 	}
 
 	orig := jobRunCreate
-	jobRunCreate = func(fleetName, instanceName, remote, branch string, verbose bool, b fleet.BackendType) error {
+	jobRunCreate = func(fleetName, instanceName, remote, branch string, verbose bool, b fleet.BackendType, sourcePath string) error {
 		if remote != "git@x:a.git" {
 			t.Errorf("remote not resolved from fleet record: %q", remote)
 		}
@@ -119,6 +119,139 @@ func TestCreateInstanceJobStartedThenDone(t *testing.T) {
 	inst, err := st.Fleets["alpha"].GetInstance("i1")
 	if err != nil || inst.Status != fleet.StatusRunning || inst.ContainerID != "fake-cid" {
 		t.Fatalf("persisted record wrong: %+v err=%v", inst, err)
+	}
+}
+
+// TestCreateInstanceLocalFolder verifies a --path (local folder) create: no
+// remote is required, the workspace IS the in-place folder, source is persisted
+// on both fleet and instance, and a second instance in the same local-folder
+// fleet is rejected (one-instance-per-folder rule).
+func TestCreateInstanceLocalFolder(t *testing.T) {
+	isolateFleetDir(t)
+
+	var gotSource, gotRemote string
+	orig := jobRunCreate
+	jobRunCreate = func(fleetName, instanceName, remote, branch string, verbose bool, b fleet.BackendType, sourcePath string) error {
+		gotRemote, gotSource = remote, sourcePath
+		return state.Update(func(st *state.State) error {
+			if f, ok := st.Fleets[fleetName]; ok {
+				if inst, err := f.GetInstance(instanceName); err == nil {
+					inst.Status = fleet.StatusRunning
+					inst.ContainerID = "cid"
+				}
+			}
+			return nil
+		})
+	}
+	defer func() { jobRunCreate = orig }()
+
+	_, client, cleanup := newTestServer(t)
+	defer cleanup()
+
+	src := "/home/dev/my-project"
+	stream, err := client.CreateInstance(context.Background(), &fleetgrpc.CreateInstanceRequest{
+		Fleet: "my-project", Instance: "a1",
+		Backend:    fleetgrpc.BackendType_BACKEND_TYPE_DEVCONTAINER,
+		SourcePath: &src,
+	})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	evs := drainJob(t, stream)
+	if last := evs[len(evs)-1].GetDone(); last == nil || !last.GetSuccess() {
+		t.Fatalf("want successful JobDone: %v", evs[len(evs)-1])
+	}
+
+	if gotSource != src {
+		t.Errorf("jobRunCreate sourcePath = %q, want %q", gotSource, src)
+	}
+	if gotRemote != "" {
+		t.Errorf("jobRunCreate remote = %q, want empty for a local folder", gotRemote)
+	}
+
+	st, _ := state.Load()
+	f := st.Fleets["my-project"]
+	if f == nil {
+		t.Fatal("local-folder fleet not created (no remote provided)")
+	}
+	if f.Remote != "" || f.SourcePath != src {
+		t.Errorf("fleet remote=%q source=%q, want remote empty + source %q", f.Remote, f.SourcePath, src)
+	}
+	inst, err := f.GetInstance("a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.WorkspaceDir != src {
+		t.Errorf("instance WorkspaceDir = %q, want the in-place folder %q", inst.WorkspaceDir, src)
+	}
+	if inst.SourcePath != src {
+		t.Errorf("instance SourcePath = %q, want %q", inst.SourcePath, src)
+	}
+
+	// One-instance-per-local-folder rule: a second instance is rejected.
+	stream2, err := client.CreateInstance(context.Background(), &fleetgrpc.CreateInstanceRequest{
+		Fleet: "my-project", Instance: "a2",
+		Backend:    fleetgrpc.BackendType_BACKEND_TYPE_DEVCONTAINER,
+		SourcePath: &src,
+	})
+	if err == nil {
+		_, err = stream2.Recv()
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("second local-folder instance: got %v, want FailedPrecondition", err)
+	}
+}
+
+// TestCreateInstanceInheritsFleetSourcePath verifies that adding an instance to
+// an EXISTING local-folder fleet (registered with a SourcePath but no instances,
+// e.g. via the TUI "new fleet from folder") inherits the folder even though the
+// request carries no source_path — the in-place-workspace path the TUI 'a' flow
+// and `fleet up <name>` both rely on.
+func TestCreateInstanceInheritsFleetSourcePath(t *testing.T) {
+	isolateFleetDir(t)
+	if err := state.Save(&state.State{Fleets: map[string]*fleet.Fleet{
+		"my-project": {Name: "my-project", SourcePath: "/home/dev/my-project"},
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var gotSource, gotRemote string
+	orig := jobRunCreate
+	jobRunCreate = func(fleetName, instanceName, remote, branch string, verbose bool, b fleet.BackendType, sourcePath string) error {
+		gotRemote, gotSource = remote, sourcePath
+		return nil
+	}
+	defer func() { jobRunCreate = orig }()
+
+	_, client, cleanup := newTestServer(t)
+	defer cleanup()
+
+	// No SourcePath in the request — it must be inherited from the fleet record.
+	stream, err := client.CreateInstance(context.Background(), &fleetgrpc.CreateInstanceRequest{
+		Fleet: "my-project", Instance: "dev",
+		Backend: fleetgrpc.BackendType_BACKEND_TYPE_DEVCONTAINER,
+	})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	if last := drainJob(t, stream); last[len(last)-1].GetDone() == nil || !last[len(last)-1].GetDone().GetSuccess() {
+		t.Fatalf("want successful JobDone: %v", last[len(last)-1])
+	}
+
+	if gotSource != "/home/dev/my-project" {
+		t.Errorf("inherited sourcePath = %q, want /home/dev/my-project", gotSource)
+	}
+	if gotRemote != "" {
+		t.Errorf("remote = %q, want empty for an inherited local folder", gotRemote)
+	}
+
+	st, _ := state.Load()
+	inst, err := st.Fleets["my-project"].GetInstance("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.WorkspaceDir != "/home/dev/my-project" || inst.SourcePath != "/home/dev/my-project" {
+		t.Errorf("instance workspace=%q source=%q, want the in-place folder", inst.WorkspaceDir, inst.SourcePath)
 	}
 }
 

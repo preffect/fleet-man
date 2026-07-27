@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/BenjaminBenetti/fleet-man/internal/devcontainersetup"
@@ -62,13 +63,32 @@ func (fleetPage *fleetPage) updateAddFleet(m *model, msg tea.Msg) tea.Cmd {
 // missing but user opted into the agent flow). Aborting either dialog
 // after this point therefore leaves no trace in state.
 func (fleetPage *fleetPage) saveAddFleet(m *model) tea.Cmd {
-	repoURL := strings.TrimSpace(fleetPage.textInput.Value())
-	if repoURL == "" {
-		m.message = "URL cannot be empty"
+	input := strings.TrimSpace(fleetPage.textInput.Value())
+	if input == "" {
+		m.message = "Enter a repo URL or an absolute folder path"
 		fleetPage.mode = viewNormal
 		fleetPage.blurDialogFields()
 		return nil
 	}
+
+	// An ABSOLUTE path is a "local folder" fleet: the folder (on the daemon host)
+	// is bind-mounted in place, no clone. Anything else is a git remote URL.
+	if filepath.IsAbs(input) {
+		fleetName := fleet.FleetNameFromPath(input)
+		if fleetName == "" {
+			m.message = "Could not derive a fleet name from that folder path"
+			fleetPage.mode = viewNormal
+			fleetPage.blurDialogFields()
+			return nil
+		}
+		fleetPage.addLocalFolderFleet(m, fleetName, input)
+		m.message = fmt.Sprintf("Added local-folder fleet %s — press a to create its instance", fleetName)
+		fleetPage.mode = viewNormal
+		fleetPage.blurDialogFields()
+		return nil
+	}
+
+	repoURL := input
 	fleetName := fleet.FleetNameFromRemote(repoURL)
 	if fleetName == "" {
 		m.message = "Could not derive fleet name from URL"
@@ -190,7 +210,19 @@ func (fleetPage *fleetPage) handleDevcontainerInspected(m *model, msg devcontain
 // branch.
 func (fleetPage *fleetPage) addPendingFleet(m *model) {
 	m.st.GetOrCreateFleet(fleetPage.addFleet.pendingFleetName, fleetPage.addFleet.pendingRepoURL)
-	_ = createFleetRemote(fleetPage.addFleet.pendingFleetName, fleetPage.addFleet.pendingRepoURL)
+	_ = createFleetRemote(fleetPage.addFleet.pendingFleetName, fleetPage.addFleet.pendingRepoURL, "")
+	fleetPage.buildRows(m)
+}
+
+// addLocalFolderFleet registers a "local folder" fleet record (empty remote,
+// SourcePath set) and rebuilds the row list. Unlike the git path it skips the
+// clone-inspect — there is nothing to clone, and the folder's devcontainer.json
+// is validated when its single instance is created via the add-instance ('a')
+// flow (which inherits this folder from the fleet record).
+func (fleetPage *fleetPage) addLocalFolderFleet(m *model, fleetName, folderPath string) {
+	f := m.st.GetOrCreateFleet(fleetName, "")
+	f.SourcePath = folderPath
+	_ = createFleetRemote(fleetName, "", folderPath)
 	fleetPage.buildRows(m)
 }
 
@@ -292,10 +324,11 @@ func (fleetPage *fleetPage) renderAddFleetDialog(m *model) string {
 	var b strings.Builder
 	b.WriteString("\n")
 	dialog := fmt.Sprintf(
-		"%s\n\n%s %s\n\n%s",
+		"%s\n\n%s %s\n%s\n\n%s",
 		dialogTitle.Render("New fleet"),
-		dialogLabel.Render("Repo:"),
+		dialogLabel.Render("Source:"),
 		fleetPage.textInput.View(),
+		dimStyle.Render("a git URL, or an absolute /path to a local folder (bind-mounted in place)"),
 		dialogHint.Render(fleetPage.textDialogHint("Add")),
 	)
 	b.WriteString(dialogBox.Render(dialog))

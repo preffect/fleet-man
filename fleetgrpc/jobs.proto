@@ -160,6 +160,12 @@ message CreateInstanceRequest {
   BackendType backend = 4;
   optional string branch = 5;
   bool verbose = 6;
+  // Absolute path (on the DAEMON host) of an existing folder to use as the
+  // project root, bind-mounted IN PLACE instead of git-cloning a remote. When
+  // set, the instance is a "local folder" instance: no clone, the folder is the
+  // workspace, and edits flow both ways. Mutually exclusive with remote/branch;
+  // its presence is what marks the instance/fleet as local-folder.
+  optional string source_path = 7;
 }
 
 // DestroyInstanceRequest destroys a single instance, or (destroy_fleet=true)

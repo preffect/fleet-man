@@ -57,8 +57,9 @@ const (
 	// remotes can never collide with another item — armada IDs are matched by
 	// dedicated checks that run before the `>= settingsItemToolStatusBase`
 	// catch-all, so being above 1000 is fine.
-	settingsItemArmadaAdd  = 800
-	settingsItemArmadaBase = 100000
+	settingsItemArmadaAdd    = 800 // "+ Remote Fleet" (gateway) add button
+	settingsItemArmadaAddSSH = 801 // "+ SSH Remote" add button
+	settingsItemArmadaBase   = 100000
 
 	settingsItemDaemonRestart = 900 // "Restart daemon" action row (below the tool-status band)
 	settingsItemDaemonLogs    = 901 // "Logs" level selector + fleet.log stream launcher
@@ -148,10 +149,11 @@ type settingsPage struct {
 type armadaAddStage int
 
 const (
-	armadaAddNone    armadaAddStage = iota
-	armadaAddURLIn                  // typing the gateway URL
-	armadaAddTokenIn                // typing the bearer token (masked)
-	armadaAddTesting                // connection test (then save) in flight
+	armadaAddNone     armadaAddStage = iota
+	armadaAddURLIn                   // typing the gateway URL
+	armadaAddTokenIn                 // typing the bearer token (masked)
+	armadaAddTesting                 // connection test (then save) in flight
+	armadaAddSSHURLIn                // typing the ssh:// URL (SSH remote add)
 )
 
 // remoteSettingsSnapshot is a comparable copy of the RemoteMcpSettings fields
@@ -330,7 +332,7 @@ var settingsSections = []settingsSection{
 			for i := range m.armadaRemotes {
 				items = append(items, settingsItemArmadaBase+i)
 			}
-			items = append(items, settingsItemArmadaAdd)
+			items = append(items, settingsItemArmadaAdd, settingsItemArmadaAddSSH)
 			return items
 		},
 	},
@@ -949,6 +951,9 @@ func (settingsPage *settingsPage) updateSettingsNav(m *model, msg tea.Msg) tea.C
 			if item == settingsItemArmadaAdd {
 				return settingsPage.beginArmadaAdd(m)
 			}
+			if item == settingsItemArmadaAddSSH {
+				return settingsPage.beginArmadaAddSSH(m)
+			}
 			if isArmadaRemoteItem(item) {
 				return settingsPage.enterArmadaRemoteRow(m, item-settingsItemArmadaBase)
 			}
@@ -1138,6 +1143,21 @@ func (settingsPage *settingsPage) beginArmadaAdd(m *model) tea.Cmd {
 	return settingsPage.input.Cursor.BlinkCmd()
 }
 
+// beginArmadaAddSSH starts the "+ SSH Remote" flow. Unlike the gateway flow it
+// is a single stage (URL only, no token) — SSH authenticates the transport.
+func (settingsPage *settingsPage) beginArmadaAddSSH(m *model) tea.Cmd {
+	if settingsPage.armadaBusy {
+		return nil
+	}
+	settingsPage.armadaAddStage = armadaAddSSHURLIn
+	settingsPage.armadaAddURL = ""
+	settingsPage.input.Placeholder = "ssh://user@host[:port][/abs/remote/socket]"
+	settingsPage.input.EchoMode = textinput.EchoNormal
+	settingsPage.input.SetValue("")
+	settingsPage.input.Focus()
+	return settingsPage.input.Cursor.BlinkCmd()
+}
+
 // cancelArmadaAdd resets the add flow and restores the shared input.
 func (settingsPage *settingsPage) cancelArmadaAdd() {
 	settingsPage.armadaAddStage = armadaAddNone
@@ -1224,6 +1244,31 @@ func (settingsPage *settingsPage) updateArmadaAdd(m *model, msg tea.Msg) tea.Cmd
 			settingsPage.input.EchoMode = textinput.EchoNormal
 			m.message = ""
 			return testArmadaRemoteCmd(settingsPage.armadaAddURL, token)
+
+		case armadaAddSSHURLIn:
+			url := strings.TrimSpace(settingsPage.input.Value())
+			if url == "" {
+				m.message = "Enter the remote's ssh:// URL"
+				return nil
+			}
+			if !strings.HasPrefix(url, "ssh://") {
+				m.message = "An SSH remote URL must start with ssh:// (e.g. ssh://user@host)"
+				return nil
+			}
+			for _, r := range m.armadaRemotes {
+				if r.URL == url {
+					m.message = "That remote is already registered"
+					return nil
+				}
+			}
+			// No token: SSH authenticates the transport. The test establishes the
+			// tunnel and runs Hello; the shared armadaTestResultMsg handler saves
+			// it as an ArmadaRemote (its ssh:// scheme marks it as an SSH remote).
+			settingsPage.armadaAddURL = url
+			settingsPage.armadaAddStage = armadaAddTesting
+			settingsPage.input.Blur()
+			m.message = ""
+			return testArmadaRemoteCmd(url, "")
 		}
 		return nil
 
@@ -1591,6 +1636,23 @@ func (settingsPage *settingsPage) viewSettings(m *model) string {
 			}
 			addValue += "\n" + strings.Repeat(" ", 21) + dimStyle.Render("Registered fleets can be switched to from the main page's Armada selector")
 			recordRow(settingsItemArmadaAdd, settingsPage.renderSettingsRow(m, addActive, "+ Remote Fleet", addValue))
+			listContent.WriteString("\n")
+
+			// "+ SSH Remote": a single-stage add (ssh:// URL only, no token). SSH
+			// carries auth — key/agent seamlessly, password via the CLI-established
+			// ControlMaster (see README "Remote over SSH").
+			sshAddActive := currentItem == settingsItemArmadaAddSSH
+			var sshAddValue string
+			switch {
+			case sshAddActive && settingsPage.armadaAddStage == armadaAddSSHURLIn:
+				sshAddValue = "URL: " + settingsPage.input.View()
+			case sshAddActive && settingsPage.armadaAddStage == armadaAddTesting:
+				sshAddValue = m.spinner.View() + " testing connection…"
+			default:
+				sshAddValue = dimStyle.Render("press enter to register a remote over SSH (key / agent auth)")
+			}
+			sshAddValue += "\n" + strings.Repeat(" ", 21) + dimStyle.Render("e.g. ssh://user@host — forwards the remote daemon's socket over SSH")
+			recordRow(settingsItemArmadaAddSSH, settingsPage.renderSettingsRow(m, sshAddActive, "+ SSH Remote", sshAddValue))
 
 		case "Tool Status":
 			for i, tool := range m.toolStatus {
@@ -1682,7 +1744,7 @@ func (settingsPage *settingsPage) viewSettings(m *model) string {
 		tail.WriteString(messageStyle.Render(m.message))
 		tail.WriteString("\n")
 	}
-	if settingsPage.armadaAddStage == armadaAddURLIn || settingsPage.armadaAddStage == armadaAddTokenIn {
+	if settingsPage.armadaAddStage == armadaAddURLIn || settingsPage.armadaAddStage == armadaAddTokenIn || settingsPage.armadaAddStage == armadaAddSSHURLIn {
 		tail.WriteString(renderHelp(m.width, []string{
 			"enter: next", "esc: cancel",
 		}))

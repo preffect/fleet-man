@@ -40,3 +40,23 @@ func Resolve(name string, repoFlag string) (*Target, error) {
 	}
 	return &Target{Fleet: fleetName, Instance: name}, nil
 }
+
+// ResolvePath parses a user-provided name for a local-folder instance
+// (`fleet up <name> --path <absPath>`). An explicit "fleet/instance" name wins;
+// otherwise the fleet name is derived from the folder's basename. Unlike
+// Resolve it never consults the cwd git remote — the folder, not a repo, is the
+// source.
+func ResolvePath(name, absPath string) (*Target, error) {
+	if strings.Contains(name, "/") {
+		parts := strings.SplitN(name, "/", 2)
+		if parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid target %q: both fleet and instance names are required", name)
+		}
+		return &Target{Fleet: parts[0], Instance: parts[1]}, nil
+	}
+	fleetName := FleetNameFromPath(absPath)
+	if fleetName == "" {
+		return nil, fmt.Errorf("could not derive fleet name from path %q (pass fleet/instance explicitly)", absPath)
+	}
+	return &Target{Fleet: fleetName, Instance: name}, nil
+}

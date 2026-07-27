@@ -774,10 +774,16 @@ type CreateInstanceRequest struct {
 	Instance string                 `protobuf:"bytes,2,opt,name=instance,proto3" json:"instance,omitempty"`
 	// git URL; optional — for an existing fleet the server resolves it from the
 	// fleet record.
-	Remote        *string     `protobuf:"bytes,3,opt,name=remote,proto3,oneof" json:"remote,omitempty"`
-	Backend       BackendType `protobuf:"varint,4,opt,name=backend,proto3,enum=fleetgrpc.BackendType" json:"backend,omitempty"`
-	Branch        *string     `protobuf:"bytes,5,opt,name=branch,proto3,oneof" json:"branch,omitempty"`
-	Verbose       bool        `protobuf:"varint,6,opt,name=verbose,proto3" json:"verbose,omitempty"`
+	Remote  *string     `protobuf:"bytes,3,opt,name=remote,proto3,oneof" json:"remote,omitempty"`
+	Backend BackendType `protobuf:"varint,4,opt,name=backend,proto3,enum=fleetgrpc.BackendType" json:"backend,omitempty"`
+	Branch  *string     `protobuf:"bytes,5,opt,name=branch,proto3,oneof" json:"branch,omitempty"`
+	Verbose bool        `protobuf:"varint,6,opt,name=verbose,proto3" json:"verbose,omitempty"`
+	// Absolute path (on the DAEMON host) of an existing folder to use as the
+	// project root, bind-mounted IN PLACE instead of git-cloning a remote. When
+	// set, the instance is a "local folder" instance: no clone, the folder is the
+	// workspace, and edits flow both ways. Mutually exclusive with remote/branch;
+	// its presence is what marks the instance/fleet as local-folder.
+	SourcePath    *string `protobuf:"bytes,7,opt,name=source_path,json=sourcePath,proto3,oneof" json:"source_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -852,6 +858,13 @@ func (x *CreateInstanceRequest) GetVerbose() bool {
 		return x.Verbose
 	}
 	return false
+}
+
+func (x *CreateInstanceRequest) GetSourcePath() string {
+	if x != nil && x.SourcePath != nil {
+		return *x.SourcePath
+	}
+	return ""
 }
 
 // DestroyInstanceRequest destroys a single instance, or (destroy_fleet=true)
@@ -1231,16 +1244,19 @@ const file_jobs_proto_rawDesc = "" +
 	"\binstance\x18\x03 \x01(\v2\x13.fleetgrpc.InstanceR\binstance\x12\x0e\n" +
 	"\x02ms\x18\x04 \x01(\x03R\x02ms\x12\x1a\n" +
 	"\bwarnings\x18\x05 \x03(\tR\bwarningsB\b\n" +
-	"\x06_error\"\xe5\x01\n" +
+	"\x06_error\"\x9b\x02\n" +
 	"\x15CreateInstanceRequest\x12\x14\n" +
 	"\x05fleet\x18\x01 \x01(\tR\x05fleet\x12\x1a\n" +
 	"\binstance\x18\x02 \x01(\tR\binstance\x12\x1b\n" +
 	"\x06remote\x18\x03 \x01(\tH\x00R\x06remote\x88\x01\x01\x120\n" +
 	"\abackend\x18\x04 \x01(\x0e2\x16.fleetgrpc.BackendTypeR\abackend\x12\x1b\n" +
 	"\x06branch\x18\x05 \x01(\tH\x01R\x06branch\x88\x01\x01\x12\x18\n" +
-	"\averbose\x18\x06 \x01(\bR\averboseB\t\n" +
+	"\averbose\x18\x06 \x01(\bR\averbose\x12$\n" +
+	"\vsource_path\x18\a \x01(\tH\x02R\n" +
+	"sourcePath\x88\x01\x01B\t\n" +
 	"\a_remoteB\t\n" +
-	"\a_branch\"\x81\x01\n" +
+	"\a_branchB\x0e\n" +
+	"\f_source_path\"\x81\x01\n" +
 	"\x16DestroyInstanceRequest\x12\x14\n" +
 	"\x05fleet\x18\x01 \x01(\tR\x05fleet\x12\x1f\n" +
 	"\binstance\x18\x02 \x01(\tH\x00R\binstance\x88\x01\x01\x12#\n" +

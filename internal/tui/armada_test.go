@@ -471,6 +471,108 @@ func TestArmadaEntriesIncludesFleetServerBoot(t *testing.T) {
 	}
 }
 
+// TestArmadaEntriesIncludesFleetSocketBoot verifies a FLEET_SOCKET-booted TUI
+// (an SSH-forwarded remote daemon socket) is reflected: 'local' is NOT marked
+// current, the socket boot endpoint is a selectable '(env)' entry that IS
+// current and displays its basename, and switching to local clears FLEET_SOCKET.
+func TestArmadaEntriesIncludesFleetSocketBoot(t *testing.T) {
+	t.Setenv("FLEET_GATEWAY", "")
+	t.Setenv("FLEET_SERVER", "")
+	t.Setenv("FLEET_SOCKET", "/tmp/fleet-remote.sock")
+
+	m := armadaTestModel(nil)
+	m.bootSocket = "/tmp/fleet-remote.sock"
+
+	entries := m.armadaEntries()
+	if entries[0].displayName != "local" || entries[0].current {
+		t.Fatalf("with FLEET_SOCKET set, 'local' must not be current: %+v", entries[0])
+	}
+	last := entries[len(entries)-1]
+	if last.socket != "/tmp/fleet-remote.sock" || !last.current {
+		t.Fatalf("FLEET_SOCKET boot endpoint should be the current entry: %+v", last)
+	}
+	if last.displayName != "fleet-remote.sock (env)" {
+		t.Fatalf("FLEET_SOCKET entry should display basename + (env): %q", last.displayName)
+	}
+
+	// Switching to local from a FLEET_SOCKET boot must clear FLEET_SOCKET.
+	m.switchArmada(armadaEntry{displayName: "local"})
+	if os.Getenv("FLEET_SOCKET") != "" {
+		t.Fatal("switching to local must unset FLEET_SOCKET")
+	}
+}
+
+// TestArmadaEntriesIncludesFleetSSHBoot verifies a FLEET_SSH-booted TUI (an
+// ssh:// convenience tunnel) is reflected: 'local' is NOT marked current, the
+// ssh boot endpoint is a selectable '(env)' entry that IS current and displays
+// its host, and switching to local clears FLEET_SSH.
+func TestArmadaEntriesIncludesFleetSSHBoot(t *testing.T) {
+	t.Setenv("FLEET_GATEWAY", "")
+	t.Setenv("FLEET_SERVER", "")
+	t.Setenv("FLEET_SOCKET", "")
+	t.Setenv("FLEET_SSH", "ssh://dev@remote-box")
+
+	m := armadaTestModel(nil)
+	m.bootSSH = "ssh://dev@remote-box"
+
+	entries := m.armadaEntries()
+	if entries[0].displayName != "local" || entries[0].current {
+		t.Fatalf("with FLEET_SSH set, 'local' must not be current: %+v", entries[0])
+	}
+	last := entries[len(entries)-1]
+	if last.sshURL != "ssh://dev@remote-box" || !last.current {
+		t.Fatalf("FLEET_SSH boot endpoint should be the current entry: %+v", last)
+	}
+	if last.displayName != "remote-box (env)" {
+		t.Fatalf("FLEET_SSH entry should display host + (env): %q", last.displayName)
+	}
+
+	// Switching to local from a FLEET_SSH boot must clear FLEET_SSH.
+	m.switchArmada(armadaEntry{displayName: "local"})
+	if os.Getenv("FLEET_SSH") != "" {
+		t.Fatal("switching to local must unset FLEET_SSH")
+	}
+}
+
+// TestArmadaEntriesRegisteredSSHRemote verifies a registered ssh:// remote in
+// the armada registry becomes a switchable entry keyed as ssh, displayed by
+// hostname, and carrying no gateway url/token.
+func TestArmadaEntriesRegisteredSSHRemote(t *testing.T) {
+	t.Setenv("FLEET_GATEWAY", "")
+	t.Setenv("FLEET_SERVER", "")
+	t.Setenv("FLEET_SOCKET", "")
+	t.Setenv("FLEET_SSH", "")
+
+	m := armadaTestModel(nil)
+	m.armadaRemotes = []configutil.ArmadaRemote{
+		{URL: "https://gw.example.com/abc123", Token: "t"},
+		{URL: "ssh://dev@build-box"},
+	}
+
+	entries := m.armadaEntries()
+	if len(entries) != 3 {
+		t.Fatalf("want 3 entries (local + gateway + ssh), got %d: %+v", len(entries), entries)
+	}
+	var ssh *armadaEntry
+	for i := range entries {
+		if entries[i].sshURL == "ssh://dev@build-box" {
+			ssh = &entries[i]
+		}
+	}
+	if ssh == nil {
+		t.Fatalf("registered ssh remote missing from entries: %+v", entries)
+	}
+	if ssh.url != "" || ssh.token != "" {
+		t.Errorf("ssh entry must not carry gateway url/token: %+v", *ssh)
+	}
+	if ssh.displayName != "build-box" {
+		t.Errorf("ssh entry display = %q, want build-box", ssh.displayName)
+	}
+	if ssh.key() != "ssh:ssh://dev@build-box" {
+		t.Errorf("ssh entry key = %q, want ssh:ssh://dev@build-box", ssh.key())
+	}
+}
+
 // TestArmadaDisplayNameHostnameAndCollision verifies entries are shown by
 // hostname, and that two gateways on the SAME host are disambiguated by the
 // first 8 characters of their session id (and the border matches).

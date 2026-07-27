@@ -218,10 +218,15 @@ func closeMutationConn() {
 
 // --- Mutation wrappers (the test seam) -------------------------------------
 
-// createFleetRemote adds (or returns the existing) fleet record.
-var createFleetRemote = func(name, remote string) error {
+// createFleetRemote adds (or returns the existing) fleet record. A non-empty
+// sourcePath registers a local-folder fleet (remote is empty in that case).
+var createFleetRemote = func(name, remote, sourcePath string) error {
 	return mutate(func(ctx context.Context, svc fleetgrpc.FleetServiceClient) error {
-		_, err := svc.CreateFleet(ctx, &fleetgrpc.CreateFleetRequest{Name: name, Remote: remote})
+		req := &fleetgrpc.CreateFleetRequest{Name: name, Remote: remote}
+		if sourcePath != "" {
+			req.SourcePath = &sourcePath
+		}
+		_, err := svc.CreateFleet(ctx, req)
 		return err
 	})
 }

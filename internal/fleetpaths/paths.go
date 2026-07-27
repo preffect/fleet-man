@@ -12,6 +12,7 @@ package fleetpaths
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Dir is the per-user fleet directory (~/.fleet) that the server owns.
@@ -102,6 +103,38 @@ func GatewaySessionPath() string {
 // derive workspace paths too.
 func WorkspacesDir() string {
 	return filepath.Join(Dir(), "workspaces")
+}
+
+// IsManagedWorkspace reports whether path lies INSIDE the fleet-managed
+// workspaces tree (WorkspacesDir()). Fleet only ever creates the private
+// per-instance workspace clones it owns under that tree, so this is the
+// invariant that gates anything destructive/mutating on a workspace: a "local
+// folder" instance bind-mounts an existing directory in place (its workspace is
+// the user's real project, OUTSIDE this tree), so callers must NOT os.RemoveAll
+// it on destroy or rewrite files inside it during provisioning. An empty path, a
+// path equal to WorkspacesDir() itself, or one that escapes upward via ".." all
+// return false. (state.IsManagedWorkspace delegates here so server code keeps
+// its historical name.)
+func IsManagedWorkspace(path string) bool {
+	if path == "" {
+		return false
+	}
+	absBase, err := filepath.Abs(WorkspacesDir())
+	if err != nil {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil {
+		return false
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 // WarnPath is the host-side warning file for a single instance (the TUI banners

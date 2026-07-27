@@ -25,9 +25,9 @@ import (
 // When branch is non-empty, the devcontainer clone uses `git clone
 // --branch <branch>` so the instance is provisioned against that ref
 // rather than the repository's default branch.
-func Run(fleetName, instanceName, remoteURL, branch string, verbose bool, backendType fleet.BackendType) (err error) {
+func Run(fleetName, instanceName, remoteURL, branch string, verbose bool, backendType fleet.BackendType, sourcePath string) (err error) {
 	start := time.Now()
-	flog.Info("instance create started", "fleet", fleetName, "instance", instanceName, "backend", backendType, "branch", branch, "remote", remoteURL)
+	flog.Info("instance create started", "fleet", fleetName, "instance", instanceName, "backend", backendType, "branch", branch, "remote", remoteURL, "source", sourcePath)
 	// Log the failure outcome (with elapsed time) from one place: every error
 	// return below flows through the named err, and setFailed only annotates
 	// state. The success outcome is logged inline at the end where the
@@ -43,6 +43,13 @@ func Run(fleetName, instanceName, remoteURL, branch string, verbose bool, backen
 	}
 
 	wsDir := filepath.Join(state.WorkspacesDir(), fleetName, instanceName, fleetName)
+	// A "local folder" instance bind-mounts an existing folder IN PLACE: the
+	// folder itself is the workspace (no clone, no copy). wsDir points at the
+	// user's real directory, outside WorkspacesDir().
+	localFolder := sourcePath != ""
+	if localFolder {
+		wsDir = sourcePath
+	}
 
 	var instanceBackend backend.Backend
 	switch backendType {
@@ -54,8 +61,10 @@ func Run(fleetName, instanceName, remoteURL, branch string, verbose bool, backen
 		instanceBackend = backendutil.New(backendType, verbose)
 	}
 
-	if backendType != fleet.BackendCoder && backendType != fleet.BackendCodespaces {
-		// Devcontainer: clone repo first, then provision
+	if backendType != fleet.BackendCoder && backendType != fleet.BackendCodespaces && !localFolder {
+		// Devcontainer: clone repo first, then provision. Skipped for a local
+		// folder — its workspace already exists in place and must not be cloned
+		// over or copied.
 		if err := os.MkdirAll(filepath.Dir(wsDir), 0755); err != nil {
 			setFailed(fleetName, instanceName, err)
 			return fmt.Errorf("mkdir: %w", err)

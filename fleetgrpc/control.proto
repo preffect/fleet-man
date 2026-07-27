@@ -126,6 +126,10 @@ message GetStateReply {
 message CreateFleetRequest {
   string name = 1;
   string remote = 2;
+  // Absolute path (on the DAEMON host) of an existing folder. When set, this is
+  // a "local folder" fleet: remote is empty and its single instance bind-mounts
+  // the folder in place. See CreateInstanceRequest.source_path.
+  optional string source_path = 3;
 }
 
 // DestroyFleet removes the fleet RECORD only (no container teardown — that is

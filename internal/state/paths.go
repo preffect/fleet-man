@@ -33,6 +33,15 @@ func WorkspacesDir() string {
 	return fleetpaths.WorkspacesDir()
 }
 
+// IsManagedWorkspace reports whether path lies INSIDE the fleet-managed
+// workspaces tree — the invariant that gates destroy()'s os.RemoveAll so an
+// in-place "local folder" workspace (the user's real project) is never deleted.
+// The definition lives in the leaf fleetpaths package (so backends can share it
+// without importing state); this wrapper keeps the historical state.* name.
+func IsManagedWorkspace(path string) bool {
+	return fleetpaths.IsManagedWorkspace(path)
+}
+
 // WarnPath returns the path to the host-side warning file for a single
 // instance. The TUI watches this path after StatusRunning and surfaces
 // the first line as a banner — a non-existent file simply means

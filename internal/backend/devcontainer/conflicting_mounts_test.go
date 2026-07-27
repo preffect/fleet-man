@@ -7,7 +7,22 @@ import (
 	"testing"
 
 	"github.com/BenjaminBenetti/fleet-man/internal/backend"
+	"github.com/BenjaminBenetti/fleet-man/internal/fleetpaths"
 )
+
+// managedWorkspace returns a workspace dir INSIDE the fleet-managed workspaces
+// tree (pointing HOME at a temp dir for the test). neutralizeConflictingMounts
+// only strips/restores a managed workspace — it never touches an in-place local
+// folder — so tests that exercise the strip/restore path must use one.
+func managedWorkspace(t *testing.T) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	dir := filepath.Join(fleetpaths.WorkspacesDir(), "fleet", "inst", "fleet")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 // TestNeutralizeMissingDevcontainerIsNoop verifies that a workspace
 // without a devcontainer.json still produces a callable restore func
@@ -179,7 +194,7 @@ func TestStripConflictingMountsTolerantOfJSONC(t *testing.T) {
 // byte-for-byte. Otherwise the user's repo carries a phantom diff and
 // a `git commit -a` from inside the workspace would capture it.
 func TestNeutralizeRestoresOriginalBytes(t *testing.T) {
-	dir := t.TempDir()
+	dir := managedWorkspace(t)
 	configDir := filepath.Join(dir, ".devcontainer")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatal(err)
@@ -229,7 +244,7 @@ func TestNeutralizeRestoresOriginalBytes(t *testing.T) {
 // .devcontainer/devcontainer.json wins over a repo-root .devcontainer.json
 // when both are present.
 func TestNeutralizePrefersDotDevcontainerSubdir(t *testing.T) {
-	dir := t.TempDir()
+	dir := managedWorkspace(t)
 	if err := os.MkdirAll(filepath.Join(dir, ".devcontainer"), 0755); err != nil {
 		t.Fatal(err)
 	}

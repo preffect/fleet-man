@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/BenjaminBenetti/fleet-man/fleetgrpc"
@@ -60,11 +61,16 @@ var saveArmadaLocal = func(remotes []configutil.ArmadaRemote) error {
 	return err
 }
 
-// pingArmadaRemote runs one Hello round trip against a registered remote.
-// Package var so tests can stub network probing.
+// pingArmadaRemote runs one Hello round trip against a registered remote. An
+// ssh:// remote is probed over its SSH tunnel (which it establishes/reuses); any
+// other URL is probed as a gateway. Package var so tests can stub network probing.
 var pingArmadaRemote = func(url, token string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), armadaLocalTimeout)
 	defer cancel()
+	if strings.HasPrefix(url, "ssh://") {
+		_, err := fleetclient.PingSSH(ctx, url)
+		return err
+	}
 	_, err := fleetclient.Ping(ctx, url, token)
 	return err
 }

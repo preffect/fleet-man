@@ -33,6 +33,8 @@ when they need attention.
 - [TUI Keybindings](#tui-keybindings)
 - [MCP Server](#mcp-server)
 - [Remote MCP](#remote-mcp) — expose MCP & gRPC to remote agents via a fleet gateway
+- [Remote over SSH](#remote-over-ssh) — drive a remote daemon from your laptop over an SSH-forwarded socket
+- [Local folder as project root](#local-folder-as-project-root) — bind-mount an existing folder in place instead of cloning
 - [Environment Variables](#environment-variables)
 - [Requirements](#requirements)
 - [Development](#development)
@@ -100,6 +102,11 @@ fleet destroy my-project
 
 # Spawn from anywhere with explicit repo
 fleet up agent-1 --repo git@github.com:org/my-project.git
+
+# Point at an existing folder as the project root — bind-mounted IN PLACE
+# (no clone/copy; edits flow both ways). The path is on the DAEMON host and
+# must be absolute for a remote daemon. One instance per local-folder fleet.
+fleet up dev --path /home/me/my-project
 
 # Reference an existing fleet from anywhere
 fleet up my-project/agent-3
@@ -459,6 +466,100 @@ The registry is stored on your own machine at `~/.fleet/armada.json` (mode
 `0600` — it holds bearer tokens) and always round-trips through your **local**
 daemon, even while the TUI is connected to a remote fleet.
 
+## Remote over SSH
+
+If you develop on a remote machine you can already SSH into, you don't need a
+public gateway to drive its fleet daemon from your laptop. Docker, the daemon,
+and your project folders stay **on the remote box**; only the TUI runs on your
+laptop — so the built-in browser (`b`) opens on your laptop and is proxied into
+the remote container, `fleet exec` gives you a shell in it, and so on.
+
+The daemon's gRPC socket is auth-less by design (it relies on the unix socket's
+`0600`/same-user protection), so the secure way to reach it remotely is to let
+**SSH** carry and authenticate the connection.
+
+**On the remote box you need** (the SSH paths connect to an existing daemon —
+they do *not* start one for you, since a client can't fork-exec a process on
+another machine):
+
+1. **`fleet` installed** (it provides both the CLI and the `fleetd` server).
+2. **Docker + the [devcontainer CLI](https://github.com/devcontainers/cli)** —
+   the containers run on the remote, next to the daemon.
+3. **A running `fleetd`.** It auto-starts the first time you run any `fleet`
+   command *on that box*, so the simplest way is to SSH in once and run e.g.
+   `fleet ls` (or run it as a service). If it isn't running, the connection test
+   / first connect fails — the forwarded socket has nothing to answer on.
+
+`fleetd` here is the fleet-man **server** (`fleet server`), not Docker: `fleet`
+is a thin client that talks to `fleetd` over `~/.fleet/fleet.sock`, and that is
+the socket the SSH paths below forward.
+
+### The easy way: `FLEET_SSH`
+
+Point fleet at the box and let it set the tunnel up for you:
+
+```bash
+# Auto-resolves the remote daemon's ~/.fleet/fleet.sock and forwards it.
+FLEET_SSH=ssh://dev@remote-box fleet
+```
+
+fleet drives the system `ssh` binary behind an SSH **ControlMaster**, so:
+
+- **Auth is whatever `ssh` already does** — a key, an interactive password /
+  passphrase prompt, or the ssh-agent — plus `~/.ssh/config`, `known_hosts`, and
+  `ProxyJump`. You authenticate **once**; later `fleet` commands reuse the
+  multiplexed connection with no re-prompt.
+- Give a non-standard user/port/socket in the URL when needed:
+  `FLEET_SSH=ssh://dev@remote-box:2222/home/dev/.fleet/fleet.sock`.
+- **No token needed** and nothing is exposed on the network — the only listener is
+  a loopback socket on your laptop, reachable solely through the SSH tunnel.
+- Note: if you use **password** auth, run one `fleet` command in a normal shell
+  first so the prompt isn't drawn over the full-screen TUI; the ControlMaster then
+  keeps you authenticated for the TUI.
+
+### Register it in the TUI (no env var)
+
+Rather than setting `FLEET_SSH` by hand each time, register the box once in
+**Settings → Fleet Armada → "+ SSH Remote"** (paste the `ssh://…` URL; fleet runs
+a connection test). It's saved to `~/.fleet/armada.json` alongside your gateway
+remotes, and you switch the whole TUI to it from the main page's **Armada
+selector** (the `A` key) — the same way you switch to a gateway remote. An SSH
+remote is a whole *daemon* you connect to (not a fleet inside one), which is why
+it lives in the Armada, not under "new fleet". Key/agent auth is seamless here;
+for password auth, connect once from a normal shell first (see the note above).
+
+### The manual way: `FLEET_SOCKET`
+
+If you'd rather own the tunnel yourself (or need forwarding options fleet doesn't
+set), forward the socket with `ssh -L` and point fleet at the local path:
+
+```bash
+# 1. Forward the remote daemon's socket to your laptop (OpenSSH ≥ 6.7).
+#    -N = run no remote command, -f = drop to the background.
+ssh -N -f -o StreamLocalBindUnlink=yes \
+  -L /tmp/fleet-remote.sock:$HOME/.fleet/fleet.sock \
+  user@remote-box
+
+# 2. Drive the remote daemon from your laptop.
+FLEET_SOCKET=/tmp/fleet-remote.sock fleet
+```
+
+- The remote socket is the daemon's `~/.fleet/fleet.sock` **on the remote box**
+  (`$HOME` resolves there, in the `ssh` command's remote half).
+- `StreamLocalBindUnlink=yes` lets SSH replace a stale local socket file; without
+  it, SSH refuses to bind if `/tmp/fleet-remote.sock` already exists.
+
+### Notes
+
+- Precedence: `FLEET_GATEWAY` > `FLEET_SERVER` > `FLEET_SOCKET` > `FLEET_SSH` > the
+  local socket.
+- Unlike `FLEET_SERVER`, neither SSH path is exposed on any TCP port — the only
+  listener is your loopback socket file, reachable solely through the SSH tunnel.
+
+Use `FLEET_GATEWAY` instead when the remote daemon is behind NAT / not directly
+SSH-reachable, or when you need to expose it to external agents over the internet
+(see [Remote MCP](#remote-mcp)).
+
 ## Environment Variables
 
 Variables fleet **reads** (set them to configure behavior):
@@ -467,7 +568,9 @@ Variables fleet **reads** (set them to configure behavior):
 |----------|-----------------|--------------|
 | `FLEET_GATEWAY` | `https://gw:50051/<id>` (or `http://…` for a cert-less/h2c gateway) | Drive a *remote* daemon through a fleet gateway (full gRPC control). Takes precedence over `FLEET_SERVER` and the local socket. See [Remote MCP](#remote-mcp). |
 | `FLEET_TOKEN` | bearer token | Token for `FLEET_GATEWAY`. Defaults to `~/.fleet/mcp.token` on the daemon's own host. |
-| `FLEET_SERVER` | `host:port` | Drive a remote daemon over plain TCP (no gateway). |
+| `FLEET_SERVER` | `host:port` | Drive a remote daemon over plain TCP (no gateway). ⚠️ Unauthenticated — no bearer token is sent and the daemon's gRPC socket has no auth gate, so only use this on a trusted private network. For remote use prefer `FLEET_GATEWAY` (token-authenticated) or `FLEET_SOCKET` over SSH. |
+| `FLEET_SOCKET` | absolute path | Drive a remote daemon over a unix socket at an arbitrary path — typically the remote daemon's `~/.fleet/fleet.sock` forwarded to the laptop over SSH (`ssh -L /local.sock:~/.fleet/fleet.sock user@host`). SSH authenticates the transport, so no token is needed. Takes precedence over `FLEET_SERVER` and the local socket (but not `FLEET_GATEWAY`). See [Remote over SSH](#remote-over-ssh). |
+| `FLEET_SSH` | `ssh://[user@]host[:port][/abs/remote/socket]` | Convenience form of `FLEET_SOCKET`: fleet sets the SSH forward up **for you** (via the system `ssh` and an SSH ControlMaster) and drives the remote daemon over it. Auth is whatever `ssh` uses — **key, password, or agent** — plus `~/.ssh/config`, `known_hosts`, and `ProxyJump`; you authenticate once and later `fleet` commands reuse the connection. Omit the socket path to auto-resolve the remote `~/.fleet/fleet.sock`. Precedence: below `FLEET_SOCKET`, above the local socket. See [Remote over SSH](#remote-over-ssh). |
 | `FLEET_DEVCONTAINER_BUILDKIT` | `auto` (default), `never` | BuildKit mode for Fleet-managed devcontainers. See [Devcontainer BuildKit](#devcontainer-buildkit). |
 | `FLEET_DEVCONTAINER_UPDATE_REMOTE_USER_UID` | `default`, `never`, `on`, `off` | Remote-user UID/GID rewrite mode. See [Devcontainer UID Rewrite](#devcontainer-uid-rewrite). |
 | `FLEET_SSH_AGENT_SOCK` | absolute path, `off`, or `none` (case-insensitive) | Override the bind source for SSH agent forwarding into instances (`off`/`none` disables it). On macOS the default is Docker Desktop's VM-side `/run/host-services/ssh-auth.sock` (OrbStack and `colima --ssh-agent` are path-compatible); set this if your Docker backend exposes the agent elsewhere (default Colima, Podman machine, Rancher Desktop). |
@@ -487,6 +590,43 @@ Fleet also **respects** standard environment when present: `HOME` (the `~/.fleet
 location), `TMUX` (enables split-pane mode when run inside tmux), `SSH_AUTH_SOCK`
 (forwarded into instances for SSH/git), and `WSL_DISTRO_NAME` / `WSL_INTEROP`
 / `WAYLAND_DISPLAY` (platform detection for clipboard and browser integration).
+
+## Local folder as project root
+
+By default `fleet up` clones a git remote into a private, per-instance workspace
+(the isolation that lets many agents run without stepping on each other). If you
+instead want to work an **existing folder** directly, point fleet at it with
+`--path`:
+
+```bash
+fleet up dev --path /home/me/my-project
+```
+
+In the **TUI**, press **`n`** (new fleet) and enter an absolute `/path` instead
+of a git URL — fleet registers a local-folder fleet; press **`a`** to create its
+(single) instance. The dialog auto-detects: an absolute path is a local folder,
+anything else is a git remote.
+
+- The folder is **bind-mounted in place** — no clone, no copy. Edits inside the
+  instance and on your host are the *same files*, in real time.
+- The path is resolved on the **daemon host**. For a remote daemon (see
+  [Remote over SSH](#remote-over-ssh)) it must be an absolute path on that host —
+  this is how you run "the devcontainer for a folder that lives on my remote box,
+  in place, on that box."
+- The folder's own `.devcontainer/devcontainer.json` is used as-is.
+- `--path` is mutually exclusive with `--repo`/`--branch`.
+- A local-folder fleet supports a **single instance** — a shared, in-place tree
+  can't isolate two agents (and two containers would fight over one folder). The
+  fleet name defaults to the folder's basename; pass `fleet/instance` explicitly
+  to override it.
+- **Your folder is never deleted.** `fleet down`/`destroy` removes the container
+  but leaves the in-place folder untouched (fleet only ever removes workspaces it
+  created under `~/.fleet/workspaces`).
+
+> ⚠️ Unlike the cloned-workspace default, a local folder is **not isolated**: an
+> agent's edits (and any `postCreate`/build side effects) change your real
+> working tree directly. That's the point of this mode — just know it's the
+> trade-off you're opting into.
 
 ## Requirements
 

@@ -55,7 +55,12 @@ func (s *service) CreateFleet(_ context.Context, req *fleetgrpc.CreateFleetReque
 		return nil, status.Error(codes.InvalidArgument, "fleet name required")
 	}
 	snapshot, err := s.mutate(func(st *state.State) error {
-		st.GetOrCreateFleet(req.GetName(), req.GetRemote())
+		f := st.GetOrCreateFleet(req.GetName(), req.GetRemote())
+		// A local-folder fleet carries the folder path (and no remote); its
+		// instances bind-mount that folder in place. Set it once on create.
+		if sp := req.GetSourcePath(); sp != "" && f.SourcePath == "" {
+			f.SourcePath = sp
+		}
 		return nil
 	})
 	if err != nil {

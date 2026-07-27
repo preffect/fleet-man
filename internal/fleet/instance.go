@@ -22,6 +22,12 @@ type Instance struct {
 	Tag          string         `json:"tag,omitempty"`
 	Color        string         `json:"color,omitempty"`
 	Branch       string         `json:"branch,omitempty"`
+	// SourcePath, when non-empty, marks a "local folder" instance: the folder at
+	// this absolute (daemon-host) path is bind-mounted IN PLACE as the workspace
+	// instead of a private git clone. WorkspaceDir equals SourcePath for such
+	// instances, so it lives OUTSIDE WorkspacesDir() and is never removed on
+	// destroy (see state.IsManagedWorkspace).
+	SourcePath string `json:"source_path,omitempty"`
 	// Automated marks an instance the automation scheduler spawned for a trigger
 	// (issue #188), as opposed to one a user created. Set once at creation and
 	// never cleared; the TUI shows a marker in front of its name.

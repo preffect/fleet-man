@@ -38,3 +38,30 @@ func Ping(ctx context.Context, gatewayURL, token string) (*fleetgrpc.HelloReply,
 	defer cancel()
 	return fleetgrpc.NewFleetServiceClient(conn).Hello(hctx, &fleetgrpc.HelloRequest{ClientVersion: version.Version})
 }
+
+// PingSSH establishes (or reuses) the SSH tunnel for an ssh:// URL and runs one
+// Hello round trip over the forwarded socket — validating that the tunnel comes
+// up (auth succeeds, the host is reachable) and a fleetd is listening on the far
+// end. It is the FLEET_SSH analogue of Ping; no bearer token is involved because
+// SSH authenticates the transport. Establishing the tunnel may prompt for a key
+// passphrase / password on first use (see ensureSSHTunnel).
+func PingSSH(ctx context.Context, sshURL string) (*fleetgrpc.HelloReply, error) {
+	spec, err := parseSSHURL(sshURL)
+	if err != nil {
+		return nil, err
+	}
+	localSocket, err := ensureSSHTunnel(spec)
+	if err != nil {
+		return nil, err
+	}
+	ep := socketEndpoint{socket: localSocket}
+	conn, err := grpc.NewClient(ep.Target(), ep.DialOptions()...)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	hctx, cancel := context.WithTimeout(ctx, pingTimeout)
+	defer cancel()
+	return fleetgrpc.NewFleetServiceClient(conn).Hello(hctx, &fleetgrpc.HelloRequest{ClientVersion: version.Version})
+}

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/BenjaminBenetti/fleet-man/internal/backend"
+	"github.com/BenjaminBenetti/fleet-man/internal/fleetpaths"
 )
 
 // neutralizeConflictingMounts ensures that any mount entries in the
@@ -31,6 +32,17 @@ import (
 func neutralizeConflictingMounts(workspaceDir string, fleetMounts []backend.Mount) (func(), error) {
 	noop := func() {}
 	if len(fleetMounts) == 0 {
+		return noop, nil
+	}
+
+	// NEVER rewrite files inside a workspace fleet doesn't own. A "local folder"
+	// instance's workspace is the user's real, in-place project directory
+	// (outside WorkspacesDir()); stripping and later restoring its
+	// devcontainer.json would mutate a tracked file, and a crash mid-`up` would
+	// leave it rewritten. Skip neutralisation there — a genuine mount conflict
+	// then surfaces as devcontainer up's own "Duplicate mount point" error
+	// rather than as silent edits to the user's file.
+	if !fleetpaths.IsManagedWorkspace(workspaceDir) {
 		return noop, nil
 	}
 

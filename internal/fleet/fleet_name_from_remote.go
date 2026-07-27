@@ -3,8 +3,21 @@ package fleet
 import (
 	"net/url"
 	"path"
+	"path/filepath"
 	"strings"
 )
+
+// FleetNameFromPath derives a fleet name from a local folder path: the cleaned
+// path's final component (e.g. /home/dev/my-project → my-project). Returns ""
+// for a path with no usable basename (empty, "/", "."), mirroring
+// FleetNameFromRemote's "" contract for an underivable name.
+func FleetNameFromPath(p string) string {
+	base := filepath.Base(filepath.Clean(strings.TrimSpace(p)))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return ""
+	}
+	return base
+}
 
 // FleetNameFromRemote extracts a fleet name from a git remote URL.
 // Examples:

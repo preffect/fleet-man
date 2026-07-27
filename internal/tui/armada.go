@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -334,6 +335,12 @@ func (m *model) pingAllArmadaCmd() tea.Cmd {
 	type target struct{ url, token string }
 	var targets []target
 	for _, r := range m.armadaRemotes {
+		// Skip ssh:// remotes in the recurring sweep: probing one would open (and
+		// re-authenticate) an SSH tunnel to that box every tick. They are tested
+		// on registration and on-demand (enter on the row) instead.
+		if strings.HasPrefix(r.URL, "ssh://") {
+			continue
+		}
 		targets = append(targets, target{r.URL, r.Token})
 	}
 	// The gateway boot remote shows in the dropdown as "(env)" even when not
@@ -387,14 +394,17 @@ func armadaPingErrText(err error) string {
 // ===========================================
 
 // armadaEntry is one row of the main-page Armada dropdown. Exactly one of url
-// (a gateway) / server (a plain FLEET_SERVER target) is set for a remote; both
-// empty means local. displayName is the short, user-facing name (hostname,
-// disambiguated by session id when two entries share a host).
+// (a gateway) / server (a plain FLEET_SERVER target) / socket (a FLEET_SOCKET
+// unix path) is set for a remote; all empty means local. displayName is the
+// short, user-facing name (hostname, disambiguated by session id when two
+// entries share a host; the socket basename for a socket entry).
 type armadaEntry struct {
 	displayName string
 	url         string // gateway URL ("" unless a gateway entry)
 	token       string
 	server      string // FLEET_SERVER host:port ("" unless a plain-TCP entry)
+	socket      string // FLEET_SOCKET unix path ("" unless a socket entry)
+	sshURL      string // FLEET_SSH ssh:// URL ("" unless an ssh entry)
 	env         bool   // an unregistered boot endpoint (shown with "(env)")
 	current     bool
 }
@@ -408,6 +418,10 @@ func (e armadaEntry) key() string {
 		return e.url
 	case e.server != "":
 		return "server:" + e.server
+	case e.socket != "":
+		return "socket:" + e.socket
+	case e.sshURL != "":
+		return "ssh:" + e.sshURL
 	default:
 		return ""
 	}
@@ -429,6 +443,12 @@ func (e armadaEntry) host() string {
 			return strings.ToLower(h)
 		}
 		return strings.ToLower(e.server)
+	}
+	if e.sshURL != "" {
+		if u, err := url.Parse(e.sshURL); err == nil && u.Hostname() != "" {
+			return strings.ToLower(u.Hostname())
+		}
+		return strings.ToLower(e.sshURL)
 	}
 	return ""
 }
@@ -455,14 +475,22 @@ func (e armadaEntry) sessionID8() string {
 
 // armadaEntries builds the dropdown: local first, then every registered
 // remote, then — when the TUI was booted pointing at an UNREGISTERED remote
-// (FLEET_GATEWAY or FLEET_SERVER) — that boot remote, so the current selection
-// is always present and selectable. Each entry's displayName is its hostname,
+// (FLEET_GATEWAY, FLEET_SERVER, FLEET_SOCKET, or FLEET_SSH) — that boot remote, so
+// the current selection is always present and selectable. Each entry's displayName is its hostname,
 // suffixed with " - <sid8>" when another entry shares the same host.
 func (m *model) armadaEntries() []armadaEntry {
 	current := armadaCurrentKey()
 	entries := []armadaEntry{{}} // local
 	bootGatewaySeen := false
+	bootSSHSeen := false
 	for _, r := range m.armadaRemotes {
+		if strings.HasPrefix(r.URL, "ssh://") {
+			if r.URL == m.bootSSH {
+				bootSSHSeen = true
+			}
+			entries = append(entries, armadaEntry{sshURL: r.URL})
+			continue
+		}
 		if r.URL == m.bootGateway {
 			bootGatewaySeen = true
 		}
@@ -475,6 +503,16 @@ func (m *model) armadaEntries() []armadaEntry {
 		// FLEET_SERVER targets aren't registrable (no token / gateway), so the
 		// boot value is the only way to represent or return to one.
 		entries = append(entries, armadaEntry{server: m.bootServer, env: true})
+	}
+	if m.bootSocket != "" {
+		// FLEET_SOCKET targets (an SSH-forwarded socket) aren't registrable
+		// either, so the boot value is the only way to represent or return to one.
+		entries = append(entries, armadaEntry{socket: m.bootSocket, env: true})
+	}
+	if m.bootSSH != "" && !bootSSHSeen {
+		// An unregistered FLEET_SSH boot endpoint still shows as a selectable
+		// "(env)" entry (a registered one already appeared in the loop above).
+		entries = append(entries, armadaEntry{sshURL: m.bootSSH, env: true})
 	}
 
 	// Count hosts so entries sharing one can be disambiguated by session id.
@@ -495,6 +533,15 @@ func (m *model) armadaEntries() []armadaEntry {
 // daemon, otherwise the hostname — suffixed with " - <sid8>" when another entry
 // shares the host, and with " (env)" for an unregistered boot endpoint.
 func armadaDisplayName(e armadaEntry, hostCounts map[string]int) string {
+	if e.socket != "" {
+		// A forwarded socket has no hostname; show its basename (always an
+		// unregistered boot endpoint, so always suffixed "(env)").
+		name := filepath.Base(e.socket)
+		if e.env {
+			name += " (env)"
+		}
+		return name
+	}
 	h := e.host()
 	if h == "" {
 		return "local"
@@ -528,6 +575,12 @@ func (m *model) armadaCurrentDisplay() string {
 	if srv := os.Getenv(fleetclient.EnvServer); srv != "" {
 		return (armadaEntry{server: srv}).host()
 	}
+	if sock := os.Getenv(fleetclient.EnvSocket); sock != "" {
+		return filepath.Base(sock)
+	}
+	if sshURL := os.Getenv(fleetclient.EnvSSH); sshURL != "" {
+		return (armadaEntry{sshURL: sshURL}).host()
+	}
 	return "local"
 }
 
@@ -540,6 +593,12 @@ func armadaCurrentKey() string {
 	}
 	if srv := os.Getenv(fleetclient.EnvServer); srv != "" {
 		return "server:" + srv
+	}
+	if sock := os.Getenv(fleetclient.EnvSocket); sock != "" {
+		return "socket:" + sock
+	}
+	if sshURL := os.Getenv(fleetclient.EnvSSH); sshURL != "" {
+		return "ssh:" + sshURL
 	}
 	return ""
 }
@@ -561,14 +620,32 @@ func (m *model) switchArmada(entry armadaEntry) tea.Cmd {
 		_ = os.Setenv(fleetclient.EnvGateway, entry.url)
 		_ = os.Setenv(fleetclient.EnvToken, entry.token)
 		_ = os.Unsetenv(fleetclient.EnvServer)
+		_ = os.Unsetenv(fleetclient.EnvSocket)
+		_ = os.Unsetenv(fleetclient.EnvSSH)
 	case entry.server != "":
 		_ = os.Setenv(fleetclient.EnvServer, entry.server)
 		_ = os.Unsetenv(fleetclient.EnvGateway)
 		_ = os.Unsetenv(fleetclient.EnvToken)
+		_ = os.Unsetenv(fleetclient.EnvSocket)
+		_ = os.Unsetenv(fleetclient.EnvSSH)
+	case entry.socket != "":
+		_ = os.Setenv(fleetclient.EnvSocket, entry.socket)
+		_ = os.Unsetenv(fleetclient.EnvGateway)
+		_ = os.Unsetenv(fleetclient.EnvToken)
+		_ = os.Unsetenv(fleetclient.EnvServer)
+		_ = os.Unsetenv(fleetclient.EnvSSH)
+	case entry.sshURL != "":
+		_ = os.Setenv(fleetclient.EnvSSH, entry.sshURL)
+		_ = os.Unsetenv(fleetclient.EnvGateway)
+		_ = os.Unsetenv(fleetclient.EnvToken)
+		_ = os.Unsetenv(fleetclient.EnvServer)
+		_ = os.Unsetenv(fleetclient.EnvSocket)
 	default: // local
 		_ = os.Unsetenv(fleetclient.EnvGateway)
 		_ = os.Unsetenv(fleetclient.EnvServer)
 		_ = os.Unsetenv(fleetclient.EnvToken)
+		_ = os.Unsetenv(fleetclient.EnvSocket)
+		_ = os.Unsetenv(fleetclient.EnvSSH)
 	}
 	// Mirror the swap into the tmux server environment so split-pane / bound-key
 	// `fleet shell` children — which tmux spawns from ITS environment, not this
@@ -631,8 +708,8 @@ func (m *model) switchArmada(entry armadaEntry) tea.Cmd {
 	return switchReloadCmd(entry.displayName, m.watchGen)
 }
 
-// syncTmuxArmadaEnv mirrors the FLEET_GATEWAY/FLEET_TOKEN/FLEET_SERVER env onto
-// the tmux server's global environment so panes tmux spawns AFTER a switch
+// syncTmuxArmadaEnv mirrors the FLEET_GATEWAY/FLEET_TOKEN/FLEET_SERVER/FLEET_SOCKET/FLEET_SSH
+// env onto the tmux server's global environment so panes tmux spawns AFTER a switch
 // (split-window, the bound %/" keys) inherit the new connection. tmux captures
 // its environment at session start, so an in-process os.Setenv alone never
 // reaches these children. No-op when not running inside tmux.
@@ -640,7 +717,7 @@ func syncTmuxArmadaEnv(m *model) {
 	if !m.inHostTmux {
 		return
 	}
-	for _, name := range []string{fleetclient.EnvGateway, fleetclient.EnvToken, fleetclient.EnvServer} {
+	for _, name := range []string{fleetclient.EnvGateway, fleetclient.EnvToken, fleetclient.EnvServer, fleetclient.EnvSocket, fleetclient.EnvSSH} {
 		if v := os.Getenv(name); v != "" {
 			_ = exec.Command("tmux", "set-environment", "-g", name, v).Run()
 		} else {

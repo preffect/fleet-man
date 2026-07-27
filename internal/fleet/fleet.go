@@ -5,10 +5,15 @@ import "fmt"
 // Fleet groups a set of related Instances that share the same remote
 // repository and per-fleet settings.
 type Fleet struct {
-	Name      string        `json:"name"`
-	Remote    string        `json:"remote"`
-	Settings  FleetSettings `json:"settings,omitzero"`
-	Instances []*Instance   `json:"instances"`
+	Name   string `json:"name"`
+	Remote string `json:"remote"`
+	// SourcePath, when non-empty, marks a "local folder" fleet: its instances
+	// bind-mount the folder at this absolute (daemon-host) path in place rather
+	// than cloning Remote (which is empty for such a fleet). A local-folder fleet
+	// supports a single instance (a shared in-place tree can't isolate two).
+	SourcePath string        `json:"source_path,omitempty"`
+	Settings   FleetSettings `json:"settings,omitzero"`
+	Instances  []*Instance   `json:"instances"`
 }
 
 // GetInstance returns the named instance from the fleet, or an error

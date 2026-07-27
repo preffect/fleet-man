@@ -32,7 +32,7 @@ func TestCreateAutomationInstanceMarksAutomated(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	orig := jobRunCreate
-	jobRunCreate = func(string, string, string, string, bool, fleet.BackendType) error { return nil }
+	jobRunCreate = func(string, string, string, string, bool, fleet.BackendType, string) error { return nil }
 	defer func() { jobRunCreate = orig }()
 
 	s, _, cleanup := newTestServer(t)

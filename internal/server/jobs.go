@@ -46,8 +46,8 @@ import (
 
 // --- work seams (overridable in tests so the engine is exercised without docker) ---
 
-var jobRunCreate = func(fleetName, instanceName, remote, branch string, verbose bool, backendType fleet.BackendType) error {
-	return create.Run(fleetName, instanceName, remote, branch, verbose, backendType)
+var jobRunCreate = func(fleetName, instanceName, remote, branch string, verbose bool, backendType fleet.BackendType, sourcePath string) error {
+	return create.Run(fleetName, instanceName, remote, branch, verbose, backendType, sourcePath)
 }
 
 var jobRunClone = func(fleetName, srcInstance, destInstance string, verbose bool) error {
@@ -450,21 +450,69 @@ func (s *service) startCreateInstanceJob(req *fleetgrpc.CreateInstanceRequest, a
 	}
 
 	backendType := s.resolveBackend(req.GetBackend())
+
+	// A non-empty source_path marks a "local folder" instance: bind-mount the
+	// folder in place instead of cloning a remote. Its workspace IS that folder
+	// (outside WorkspacesDir()), so destroy() never removes it.
+	sourcePath := req.GetSourcePath()
+	if sourcePath == "" {
+		// Adding an instance to an EXISTING local-folder fleet (registered via
+		// `fleet up --path` or the TUI "new fleet from folder"): inherit the
+		// fleet's folder so any client works without re-specifying the path.
+		if st, err := state.Load(); err == nil {
+			if f, ok := st.Fleets[fleetName]; ok && f.SourcePath != "" {
+				sourcePath = f.SourcePath
+			}
+		}
+	}
+	localFolder := sourcePath != ""
+	if localFolder && backendType != fleet.BackendDevcontainer {
+		return nil, status.Errorf(codes.InvalidArgument, "--path (local folder) requires the devcontainer backend, got %q", backendType)
+	}
+
 	wsDir := filepath.Join(state.WorkspacesDir(), fleetName, instanceName, fleetName)
+	if localFolder {
+		wsDir = sourcePath
+	}
 
 	var remote string
 	err := state.Update(func(st *state.State) error {
 		f, ok := st.Fleets[fleetName]
 		if !ok {
-			if req.Remote == nil || req.GetRemote() == "" {
-				return status.Errorf(codes.NotFound, "fleet %q not found and no remote provided", fleetName)
+			if localFolder {
+				f = st.GetOrCreateFleet(fleetName, "")
+				f.SourcePath = sourcePath
+			} else {
+				if req.Remote == nil || req.GetRemote() == "" {
+					return status.Errorf(codes.NotFound, "fleet %q not found and no remote provided", fleetName)
+				}
+				f = st.GetOrCreateFleet(fleetName, req.GetRemote())
 			}
-			f = st.GetOrCreateFleet(fleetName, req.GetRemote())
 		}
-		if req.Remote != nil && req.GetRemote() != "" {
-			remote = req.GetRemote()
+		if localFolder {
+			// Don't mix source kinds under one fleet name, and enforce one
+			// instance per local-folder fleet — a shared in-place tree can't
+			// isolate two instances (and two containers would fight over the same
+			// devcontainer.local_folder label).
+			if f.Remote != "" {
+				return status.Errorf(codes.FailedPrecondition, "fleet %q already exists as a git-remote fleet; use a different name for the folder", fleetName)
+			}
+			if f.SourcePath != "" && f.SourcePath != sourcePath {
+				return status.Errorf(codes.FailedPrecondition, "fleet %q is already bound to folder %q; use a different name", fleetName, f.SourcePath)
+			}
+			f.SourcePath = sourcePath
+			if len(f.Instances) > 0 {
+				return status.Errorf(codes.FailedPrecondition, "fleet %q is a local-folder fleet and supports a single instance (%q already exists)", fleetName, f.Instances[0].Name)
+			}
 		} else {
-			remote = f.Remote
+			if f.SourcePath != "" {
+				return status.Errorf(codes.FailedPrecondition, "fleet %q is a local-folder fleet; add instances with --path", fleetName)
+			}
+			if req.Remote != nil && req.GetRemote() != "" {
+				remote = req.GetRemote()
+			} else {
+				remote = f.Remote
+			}
 		}
 		if _, err := f.GetInstance(instanceName); err == nil {
 			return status.Errorf(codes.AlreadyExists, "instance %s/%s already exists", fleetName, instanceName)
@@ -478,6 +526,7 @@ func (s *service) startCreateInstanceJob(req *fleetgrpc.CreateInstanceRequest, a
 			Status:       fleet.StatusCreating,
 			Backend:      backendType,
 			Branch:       req.GetBranch(),
+			SourcePath:   sourcePath,
 			Automated:    automated,
 		})
 	})
@@ -488,7 +537,7 @@ func (s *service) startCreateInstanceJob(req *fleetgrpc.CreateInstanceRequest, a
 
 	j := s.jobs.start(fleetgrpc.JobKind_JOB_KIND_CREATE_INSTANCE, fleetName, instanceName, time.Now())
 	go s.runJob(j, func() (*fleetgrpc.Instance, []string, error) {
-		err := jobRunCreate(fleetName, instanceName, remote, req.GetBranch(), req.GetVerbose(), backendType)
+		err := jobRunCreate(fleetName, instanceName, remote, req.GetBranch(), req.GetVerbose(), backendType, sourcePath)
 		return loadInstanceSnapshot(fleetName, instanceName), nil, err
 	})
 	return j, nil
@@ -793,8 +842,19 @@ func (s *service) destroy(fleetName, instanceName string, destroyFleet bool) []s
 			warnings = append(warnings, fmt.Sprintf("teardown %s/%s container: %v", fleetName, t.name, err))
 		}
 		if t.workspaceDir != "" {
-			if err := os.RemoveAll(t.workspaceDir); err != nil {
-				warnings = append(warnings, fmt.Sprintf("remove workspace %s: %v", t.workspaceDir, err))
+			// SAFETY GATE: only ever delete a workspace that fleet itself created
+			// under the managed workspaces tree. A "local folder" instance
+			// bind-mounts an existing directory in place, so its WorkspaceDir is
+			// the user's real project (outside WorkspacesDir()) — os.RemoveAll'ing
+			// that would delete their work. Removing the container must never
+			// remove such a folder; leave it untouched.
+			if state.IsManagedWorkspace(t.workspaceDir) {
+				if err := os.RemoveAll(t.workspaceDir); err != nil {
+					warnings = append(warnings, fmt.Sprintf("remove workspace %s: %v", t.workspaceDir, err))
+				}
+			} else {
+				flog.Info("preserving in-place workspace on destroy (not fleet-managed)",
+					"fleet", fleetName, "instance", t.name, "workspace", t.workspaceDir)
 			}
 		}
 	}
