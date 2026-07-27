@@ -60,6 +60,14 @@ To install a specific version:
 sudo curl -sL https://raw.githubusercontent.com/BenjaminBenetti/fleet-man/main/install.sh | sh -s -- --version v0.2.0
 ```
 
+To install from a **fork's** releases (e.g. a pre-release build), point the
+installer at that repo with `--repo` (or the `FLEET_REPO` env var):
+
+```bash
+sudo curl -sL https://raw.githubusercontent.com/<owner>/fleet-man/main/install.sh \
+  | sh -s -- --repo <owner>/fleet-man
+```
+
 ## Usage
 
 Run `fleet` with no arguments to launch the interactive TUI, or use subcommands directly:

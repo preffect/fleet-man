@@ -1,7 +1,10 @@
 #!/bin/sh
 set -e
 
-REPO="BenjaminBenetti/fleet-man"
+# REPO defaults to the upstream project but can be pointed at a fork — handy for
+# installing a pre-release build from your own fork's releases. Override with the
+# FLEET_REPO env var or the --repo flag (the flag wins).
+REPO="${FLEET_REPO:-BenjaminBenetti/fleet-man}"
 INSTALL_DIR="/usr/local/bin"
 BINARY="fleet"
 VERSION=""
@@ -11,6 +14,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version)
             VERSION="$2"
+            shift 2
+            ;;
+        --repo)
+            REPO="$2"
             shift 2
             ;;
         *)
