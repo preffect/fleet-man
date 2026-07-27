@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/BenjaminBenetti/fleet-man/internal/fleet"
+	"github.com/BenjaminBenetti/fleet-man/internal/fleetclient"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -589,9 +590,19 @@ type addInstanceState struct {
 	editing bool
 }
 
-// availableBackendTypes returns the subset of backend types whose
-// required CLI tool is found on the system.
+// availableBackendTypes returns the backend types the current daemon can
+// provision. m.toolStatus is a probe of the CLIENT host, which is only the
+// provisioning host for a LOCAL daemon — so it filters by it only then. For a
+// REMOTE daemon (FLEET_GATEWAY/FLEET_SERVER/FLEET_SOCKET/FLEET_SSH) the tools
+// live on the far end, which the client can't see, so every backend is offered
+// and the daemon is the source of truth (it errors clearly if a tool is truly
+// missing there). Without this, a laptop lacking e.g. the devcontainer CLI would
+// wrongly hide devcontainer for a remote fleet — including any local-folder
+// fleet, which requires it.
 func (fleetPage *fleetPage) availableBackendTypes(m *model) []fleet.BackendType {
+	if fleetclient.IsRemote() {
+		return allBackendTypes
+	}
 	var out []fleet.BackendType
 	for _, backendType := range allBackendTypes {
 		bin := backendToolRequirements[backendType]
