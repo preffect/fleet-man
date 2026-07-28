@@ -453,8 +453,16 @@ func (s *service) startCreateInstanceJob(req *fleetgrpc.CreateInstanceRequest, a
 
 	// A non-empty source_path marks a "local folder" instance: bind-mount the
 	// folder in place instead of cloning a remote. Its workspace IS that folder
-	// (outside WorkspacesDir()), so destroy() never removes it.
-	sourcePath := req.GetSourcePath()
+	// (outside WorkspacesDir()), so destroy() never removes it. Clean it: a
+	// trailing slash (or "..") would be passed to `devcontainer up` verbatim but
+	// the devcontainer CLI normalizes its devcontainer.local_folder label, so an
+	// un-normalized path desyncs pruneStaleContainers (which filters on that
+	// label) — leaving stale containers to be reused forever (issue: in-place
+	// instance stuck reusing a dead container).
+	sourcePath := strings.TrimSpace(req.GetSourcePath())
+	if sourcePath != "" {
+		sourcePath = filepath.Clean(sourcePath)
+	}
 	if sourcePath == "" {
 		// Adding an instance to an EXISTING local-folder fleet (registered via
 		// `fleet up --path` or the TUI "new fleet from folder"): inherit the

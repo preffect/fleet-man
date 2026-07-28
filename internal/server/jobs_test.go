@@ -255,6 +255,52 @@ func TestCreateInstanceInheritsFleetSourcePath(t *testing.T) {
 	}
 }
 
+// TestCreateInstanceLocalFolderNormalizesPath guards the trailing-slash bug: a
+// source_path like "/x/proj/" must be cleaned before it's stored/used, else the
+// devcontainer CLI's normalized "/x/proj" label desyncs pruneStaleContainers and
+// stale containers get reused forever.
+func TestCreateInstanceLocalFolderNormalizesPath(t *testing.T) {
+	isolateFleetDir(t)
+
+	var gotSource string
+	orig := jobRunCreate
+	jobRunCreate = func(fleetName, instanceName, remote, branch string, verbose bool, b fleet.BackendType, sourcePath string) error {
+		gotSource = sourcePath
+		return nil
+	}
+	defer func() { jobRunCreate = orig }()
+
+	_, client, cleanup := newTestServer(t)
+	defer cleanup()
+
+	slashed := "/home/dev/my-project/" // trailing slash + should be cleaned
+	stream, err := client.CreateInstance(context.Background(), &fleetgrpc.CreateInstanceRequest{
+		Fleet: "my-project", Instance: "a1",
+		Backend:    fleetgrpc.BackendType_BACKEND_TYPE_DEVCONTAINER,
+		SourcePath: &slashed,
+	})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	if last := drainJob(t, stream); last[len(last)-1].GetDone() == nil {
+		t.Fatalf("no JobDone: %v", last)
+	}
+
+	const clean = "/home/dev/my-project"
+	if gotSource != clean {
+		t.Errorf("jobRunCreate sourcePath = %q, want cleaned %q", gotSource, clean)
+	}
+	st, _ := state.Load()
+	f := st.Fleets["my-project"]
+	if f.SourcePath != clean {
+		t.Errorf("fleet SourcePath = %q, want cleaned %q", f.SourcePath, clean)
+	}
+	inst, _ := f.GetInstance("a1")
+	if inst.SourcePath != clean || inst.WorkspaceDir != clean {
+		t.Errorf("instance source=%q workspace=%q, want cleaned %q", inst.SourcePath, inst.WorkspaceDir, clean)
+	}
+}
+
 func TestCreateInstanceRejectsDuplicate(t *testing.T) {
 	isolateFleetDir(t)
 	if err := state.Save(&state.State{Fleets: map[string]*fleet.Fleet{

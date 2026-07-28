@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 
 	"github.com/BenjaminBenetti/fleet-man/fleetgrpc"
 	"github.com/BenjaminBenetti/fleet-man/internal/fleet"
@@ -58,8 +60,10 @@ func (s *service) CreateFleet(_ context.Context, req *fleetgrpc.CreateFleetReque
 		f := st.GetOrCreateFleet(req.GetName(), req.GetRemote())
 		// A local-folder fleet carries the folder path (and no remote); its
 		// instances bind-mount that folder in place. Set it once on create.
-		if sp := req.GetSourcePath(); sp != "" && f.SourcePath == "" {
-			f.SourcePath = sp
+		if sp := strings.TrimSpace(req.GetSourcePath()); sp != "" && f.SourcePath == "" {
+			// Clean so a trailing slash can't desync pruneStaleContainers from the
+			// devcontainer CLI's normalized local_folder label (see jobs.go).
+			f.SourcePath = filepath.Clean(sp)
 		}
 		return nil
 	})
